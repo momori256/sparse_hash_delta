@@ -4,27 +4,28 @@ const M: usize = 1e9 as usize + 7;
 const B: usize = 100;
 
 #[derive(Debug, PartialEq)]
-enum Compression<'a> {
+pub enum Compression<'a> {
     Match(usize, usize),
     Raw(&'a [u8]),
 }
 
-fn compress<'a>(b: &'a [u8], match_intervals: &[MatchInterval]) -> Vec<Compression<'a>> {
+pub fn delta<'a>(a: &'a [u8], b: &'a [u8], min_match_len: usize) -> Vec<Compression<'a>> {
     use Compression::*;
 
+    let match_intervals = extract_matches(a, b, min_match_len);
     let mut results = Vec::new();
     let mut prev = 0;
     for MatchInterval { la, lb, len } in match_intervals {
-        if prev < *lb {
-            results.push(Raw(&b[prev..*lb]));
+        if prev < lb {
+            results.push(Raw(&b[prev..lb]));
         }
-        results.push(Match(*la, *len));
-        prev = *lb + *len;
+        results.push(Match(la, len));
+        prev = lb + len;
     }
     results
 }
 
-fn expand<'a>(a: &'a [u8], compressions: &[Compression<'a>]) -> Vec<&'a u8> {
+pub fn restore<'a>(a: &'a [u8], compressions: &[Compression<'a>]) -> Vec<&'a u8> {
     let mut results = Vec::new();
     for c in compressions {
         match c {
@@ -39,7 +40,7 @@ fn expand<'a>(a: &'a [u8], compressions: &[Compression<'a>]) -> Vec<&'a u8> {
     results.into_iter().flatten().collect()
 }
 
-fn delta(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
+fn extract_matches(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
     let hash_len = (min_match_len + 1) / 2;
     let hashes: HashMap<usize, usize> = RollingHash::new(a, hash_len).step_by(hash_len).collect();
     let matches = RollingHash::new(b, hash_len)
@@ -201,18 +202,18 @@ mod tests {
     }
 
     #[test]
-    fn delta_2345() {
+    fn extract_match_2345() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [2, 3, 4, 5];
-        let result = delta(&a, &b, 4);
+        let result = extract_matches(&a, &b, 4);
         assert_eq!(result, vec![make_match_interval(2, 0, 4)]);
     }
 
     #[test]
-    fn delta_45() {
+    fn extract_match_45() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [0, 4, 5, 0];
-        let result = delta(&a, &b, 1);
+        let result = extract_matches(&a, &b, 1);
         assert_eq!(
             result,
             vec![
@@ -224,10 +225,10 @@ mod tests {
     }
 
     #[test]
-    fn delta_123_567() {
+    fn extract_match_123_567() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [5, 6, 7, 9, 9, 1, 2, 3];
-        let result = delta(&a, &b, 1);
+        let result = extract_matches(&a, &b, 1);
         assert_eq!(
             result,
             vec![
@@ -238,21 +239,20 @@ mod tests {
     }
 
     #[test]
-    fn compress_123_567() {
+    fn delta_123_567() {
         use Compression::*;
+        let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [5, 6, 7, 9, 9, 1, 2, 3];
-        let match_intervals = vec![make_match_interval(5, 0, 3), make_match_interval(1, 5, 3)];
-        let result = compress(&b, &match_intervals);
+        let result = delta(&a, &b, 3);
         assert_eq!(result, vec![Match(5, 3), Raw(&[9, 9]), Match(1, 3)]);
     }
 
     #[test]
-    fn expand_123_567() {
+    fn restore_123_567() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [5, 6, 7, 9, 9, 1, 2, 3];
-        let matches = delta(&a, &b, 3);
-        let comps = compress(&b, &matches);
-        let result = expand(&a, &comps);
+        let delta = delta(&a, &b, 3);
+        let result = restore(&a, &delta);
         assert_eq!(result, b.iter().collect::<Vec<_>>());
     }
 
