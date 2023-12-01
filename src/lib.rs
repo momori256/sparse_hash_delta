@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 const M: usize = 1e9 as usize + 7;
+const B: usize = 100;
 
 fn delta(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
     let hash_len = (min_match_len + 1) / 2;
@@ -17,11 +18,10 @@ fn delta(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
             m.remove_overlap(acc);
             if m.len > 0 {
                 *acc = m;
-                Some(m)
-            } else {
-                None
             }
-        });
+            Some(m)
+        })
+        .filter(|m| m.len > 0);
     matches.collect()
 }
 
@@ -45,10 +45,10 @@ impl<'a> RollingHash<'a> {
         }
     }
 
-    fn calc_initial_hash(data: &[u8], hash_len: usize) -> usize {
+    fn initial_hash(data: &[u8], hash_len: usize) -> usize {
         let mut hash = 0;
         for i in 0..hash_len {
-            hash = hash + modpow(Self::B, hash_len - 1 - i) * Self::to_usize(data[i]);
+            hash = hash + modpow(B, hash_len - 1 - i) * Self::to_usize(data[i]);
             hash %= M;
         }
         hash
@@ -57,8 +57,6 @@ impl<'a> RollingHash<'a> {
     fn to_usize(x: u8) -> usize {
         x as usize + 1
     }
-
-    const B: usize = 100;
 }
 
 impl<'a> Iterator for RollingHash<'a> {
@@ -70,7 +68,7 @@ impl<'a> Iterator for RollingHash<'a> {
         }
 
         if let None = self.hash {
-            let hash = Self::calc_initial_hash(self.data, self.hash_len);
+            let hash = Self::initial_hash(self.data, self.hash_len);
             self.hash = Some(hash);
             return Some((hash, 0));
         }
@@ -78,9 +76,9 @@ impl<'a> Iterator for RollingHash<'a> {
         let mut hash = self.hash.unwrap();
         for i in 0..self.stride {
             let i = self.index + i;
-            let v1 = Self::B * hash % M;
+            let v1 = B * hash % M;
             let v2 = Self::to_usize(self.data[i + self.hash_len]);
-            let v3 = modpow(Self::B, self.hash_len) * Self::to_usize(self.data[i]) % M;
+            let v3 = modpow(B, self.hash_len) * Self::to_usize(self.data[i]) % M;
             hash = (v1 + v2 + M - v3) % M; // v1 + v2 - v3
         }
 
@@ -98,6 +96,7 @@ struct MatchInterval {
 }
 
 impl MatchInterval {
+    /// Search the match interval from a[ia] and b[ib].
     fn new(a: &[u8], b: &[u8], ia: usize, ib: usize) -> Self {
         let r = a[ia..]
             .iter()
@@ -167,16 +166,45 @@ fn modpow(a: usize, b: usize) -> usize {
 mod tests {
     use super::*;
 
-    fn init_match_interval(la: usize, lb: usize, len: usize) -> MatchInterval {
+    fn make_match_interval(la: usize, lb: usize, len: usize) -> MatchInterval {
         MatchInterval { la, lb, len }
     }
 
     #[test]
-    fn delta_abcd() {
+    fn delta_2345() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [2, 3, 4, 5];
         let result = delta(&a, &b, 4);
-        assert_eq!(result, vec![init_match_interval(2, 0, 4)]);
+        assert_eq!(result, vec![make_match_interval(2, 0, 4)]);
+    }
+
+    #[test]
+    fn delta_45() {
+        let a = [0, 1, 2, 3, 4, 5, 6, 7];
+        let b = [0, 4, 5, 0];
+        let result = delta(&a, &b, 1);
+        assert_eq!(
+            result,
+            vec![
+                make_match_interval(0, 0, 1), // 0.
+                make_match_interval(4, 1, 2), // 4 5.
+                make_match_interval(0, 3, 1), // 0.
+            ]
+        );
+    }
+
+    #[test]
+    fn delta_123_567() {
+        let a = [0, 1, 2, 3, 4, 5, 6, 7];
+        let b = [1, 2, 3, 9, 5, 6, 7];
+        let result = delta(&a, &b, 1);
+        assert_eq!(
+            result,
+            vec![
+                make_match_interval(1, 0, 3), // 1 2 3..
+                make_match_interval(5, 4, 3), // 5 6 7
+            ]
+        );
     }
 
     #[test]
@@ -184,7 +212,7 @@ mod tests {
         let a = [0, 1, 2, 3, 4, 5];
         let b = [2, 3, 4];
         let result = MatchInterval::new(&a, &b, 3, 1);
-        assert_eq!(result, init_match_interval(2, 0, 3));
+        assert_eq!(result, make_match_interval(2, 0, 3));
     }
 
     #[test]
@@ -192,10 +220,10 @@ mod tests {
         // m1 : |--------|
         // m2 :      |--------|
         // m2':           |---|
-        let m1 = init_match_interval(0, 0, 10);
-        let mut m2 = init_match_interval(3, 5, 10);
+        let m1 = make_match_interval(0, 0, 10);
+        let mut m2 = make_match_interval(3, 5, 10);
         m2.remove_overlap(&m1);
-        assert_eq!(m2, init_match_interval(9, 11, 4));
+        assert_eq!(m2, make_match_interval(9, 11, 4));
     }
 
     #[test]
@@ -203,10 +231,10 @@ mod tests {
         // m1 : |--------|
         // m2 :   |------|
         // m2':   ||
-        let m1 = init_match_interval(0, 0, 10);
-        let mut m2 = init_match_interval(3, 5, 5);
+        let m1 = make_match_interval(0, 0, 10);
+        let mut m2 = make_match_interval(3, 5, 5);
         m2.remove_overlap(&m1);
-        assert_eq!(m2, init_match_interval(3, 5, 0));
+        assert_eq!(m2, make_match_interval(3, 5, 0));
     }
 
     #[test]
@@ -214,10 +242,10 @@ mod tests {
         // m1 : |--------|
         // m2 : |--------|
         // m2': ||
-        let m1 = init_match_interval(0, 0, 10);
-        let mut m2 = init_match_interval(0, 0, 10);
+        let m1 = make_match_interval(0, 0, 10);
+        let mut m2 = make_match_interval(0, 0, 10);
         m2.remove_overlap(&m1);
-        assert_eq!(m2, init_match_interval(0, 0, 0));
+        assert_eq!(m2, make_match_interval(0, 0, 0));
     }
 
     #[test]
@@ -226,9 +254,9 @@ mod tests {
         // m2 : |--------|
         // m2': |--------|
         let m1 = MatchInterval::empty();
-        let mut m2 = init_match_interval(0, 0, 10);
+        let mut m2 = make_match_interval(0, 0, 10);
         m2.remove_overlap(&m1);
-        assert_eq!(m2, init_match_interval(0, 0, 10));
+        assert_eq!(m2, make_match_interval(0, 0, 10));
     }
 
     #[test]
@@ -236,10 +264,10 @@ mod tests {
         // m1 : |--------|
         // m2 :           |--------|
         // m2':           |--------|
-        let m1 = init_match_interval(0, 0, 10);
-        let mut m2 = init_match_interval(3, 11, 10);
+        let m1 = make_match_interval(0, 0, 10);
+        let mut m2 = make_match_interval(3, 11, 10);
         m2.remove_overlap(&m1);
-        assert_eq!(m2, init_match_interval(3, 11, 10));
+        assert_eq!(m2, make_match_interval(3, 11, 10));
     }
 
     #[test]
