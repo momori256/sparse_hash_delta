@@ -3,6 +3,42 @@ use std::collections::HashMap;
 const M: usize = 1e9 as usize + 7;
 const B: usize = 100;
 
+#[derive(Debug, PartialEq)]
+enum Compression<'a> {
+    Match(usize, usize),
+    Raw(&'a [u8]),
+}
+
+fn compress<'a>(b: &'a [u8], match_intervals: &[MatchInterval]) -> Vec<Compression<'a>> {
+    use Compression::*;
+
+    let mut results = Vec::new();
+    let mut prev = 0;
+    for MatchInterval { la, lb, len } in match_intervals {
+        if prev < *lb {
+            results.push(Raw(&b[prev..*lb]));
+        }
+        results.push(Match(*la, *len));
+        prev = *lb + *len;
+    }
+    results
+}
+
+fn expand<'a>(a: &'a [u8], compressions: &[Compression<'a>]) -> Vec<&'a u8> {
+    let mut results = Vec::new();
+    for c in compressions {
+        match c {
+            Compression::Match(la, len) => {
+                results.push(&a[*la..*la + *len]);
+            }
+            Compression::Raw(data) => {
+                results.push(*data);
+            }
+        }
+    }
+    results.into_iter().flatten().collect()
+}
+
 fn delta(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
     let hash_len = (min_match_len + 1) / 2;
     let hashes: HashMap<usize, usize> = RollingHash::new(a, hash_len, hash_len).collect();
@@ -196,15 +232,34 @@ mod tests {
     #[test]
     fn delta_123_567() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
-        let b = [1, 2, 3, 9, 5, 6, 7];
+        let b = [5, 6, 7, 9, 9, 1, 2, 3];
         let result = delta(&a, &b, 1);
         assert_eq!(
             result,
             vec![
-                make_match_interval(1, 0, 3), // 1 2 3..
-                make_match_interval(5, 4, 3), // 5 6 7
+                make_match_interval(5, 0, 3), // 5 6 7.
+                make_match_interval(1, 5, 3), // 1 2 3.
             ]
         );
+    }
+
+    #[test]
+    fn compress_123_567() {
+        use Compression::*;
+        let b = [5, 6, 7, 9, 9, 1, 2, 3];
+        let match_intervals = vec![make_match_interval(5, 0, 3), make_match_interval(1, 5, 3)];
+        let result = compress(&b, &match_intervals);
+        assert_eq!(result, vec![Match(5, 3), Raw(&[9, 9]), Match(1, 3)]);
+    }
+
+    #[test]
+    fn expand_123_567() {
+        let a = [0, 1, 2, 3, 4, 5, 6, 7];
+        let b = [5, 6, 7, 9, 9, 1, 2, 3];
+        let matches = delta(&a, &b, 3);
+        let comps = compress(&b, &matches);
+        let result = expand(&a, &comps);
+        assert_eq!(result, b.iter().collect::<Vec<_>>());
     }
 
     #[test]
