@@ -41,8 +41,8 @@ fn expand<'a>(a: &'a [u8], compressions: &[Compression<'a>]) -> Vec<&'a u8> {
 
 fn delta(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
     let hash_len = (min_match_len + 1) / 2;
-    let hashes: HashMap<usize, usize> = RollingHash::new(a, hash_len, hash_len).collect();
-    let matches = RollingHash::new(b, hash_len, 1)
+    let hashes: HashMap<usize, usize> = RollingHash::new(a, hash_len).step_by(hash_len).collect();
+    let matches = RollingHash::new(b, hash_len)
         .filter_map(|(hb, ib)| {
             if let Some(&ia) = hashes.get(&hb) {
                 Some(MatchInterval::new(a, b, ia, ib))
@@ -64,17 +64,15 @@ fn delta(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
 struct RollingHash<'a> {
     data: &'a [u8],
     hash_len: usize,
-    stride: usize,
     index: usize,
     hash: Option<usize>,
 }
 
 impl<'a> RollingHash<'a> {
-    pub fn new(data: &'a [u8], hash_len: usize, stride: usize) -> Self {
+    pub fn new(data: &'a [u8], hash_len: usize) -> Self {
         let hash_len = std::cmp::min(data.len(), hash_len);
         Self {
             data,
-            stride,
             hash_len,
             index: 0,
             hash: None,
@@ -99,7 +97,7 @@ impl<'a> Iterator for RollingHash<'a> {
     type Item = (usize, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index + self.hash_len + self.stride > self.data.len() {
+        if self.index + self.hash_len >= self.data.len() {
             return None;
         }
 
@@ -109,16 +107,12 @@ impl<'a> Iterator for RollingHash<'a> {
             return Some((hash, 0));
         }
 
-        let mut hash = self.hash.unwrap();
-        for i in 0..self.stride {
-            let i = self.index + i;
-            let v1 = B * hash % M;
-            let v2 = Self::to_usize(self.data[i + self.hash_len]);
-            let v3 = modpow(B, self.hash_len) * Self::to_usize(self.data[i]) % M;
-            hash = (v1 + v2 + M - v3) % M; // v1 + v2 - v3
-        }
+        let v1 = B * self.hash.unwrap() % M;
+        let v2 = Self::to_usize(self.data[self.index + self.hash_len]);
+        let v3 = modpow(B, self.hash_len) * Self::to_usize(self.data[self.index]) % M;
+        let hash = (v1 + v2 + M - v3) % M; // v1 + v2 - v3
 
-        self.index += self.stride;
+        self.index += 1;
         self.hash = Some(hash);
         Some((hash, self.index))
     }
@@ -332,8 +326,8 @@ mod tests {
     }
 
     #[test]
-    fn rolling_hash_0101() {
-        let mut hashes = RollingHash::new(&[0, 1, 0, 1], 3, 1);
+    fn rolling_hash_0101x() {
+        let mut hashes = RollingHash::new(&[0, 1, 0, 1], 3);
         assert_eq!(hashes.next(), Some((10201, 0)));
         assert_eq!(hashes.next(), Some((20102, 1)));
         assert_eq!(hashes.next(), None);
@@ -341,7 +335,7 @@ mod tests {
 
     #[test]
     fn rolling_hash_010101() {
-        let mut hashes = RollingHash::new(&[0, 1, 0, 1, 0, 1], 3, 1);
+        let mut hashes = RollingHash::new(&[0, 1, 0, 1, 0, 1], 3);
         assert_eq!(hashes.next(), Some((10201, 0)));
         assert_eq!(hashes.next(), Some((20102, 1)));
         assert_eq!(hashes.next(), Some((10201, 2)));
@@ -351,7 +345,7 @@ mod tests {
 
     #[test]
     fn rolling_hash_abcdefg() {
-        let mut hashes = RollingHash::new("abcdefg".as_ref(), 4, 2);
+        let mut hashes = RollingHash::new("abcdefg".as_ref(), 4).step_by(2);
         let expected = [99000101, 100010202, 101020303, 102030404];
         assert_eq!(hashes.next(), Some((expected[0], 0)));
         assert_eq!(hashes.next(), Some((expected[2], 2)));
@@ -361,7 +355,7 @@ mod tests {
     #[test]
     fn rolling_hash_exceeds_mod() {
         let data = vec![255u8; 20];
-        let mut hashes = RollingHash::new(&data, 10, 3);
+        let mut hashes = RollingHash::new(&data, 10).step_by(3);
         assert_eq!(hashes.next(), Some((757588431, 0)));
         assert_eq!(hashes.next(), Some((757588431, 3)));
         assert_eq!(hashes.next(), Some((757588431, 6)));
