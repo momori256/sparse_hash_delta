@@ -14,7 +14,7 @@ pub fn delta<'a>(a: &'a [u8], b: &'a [u8], min_match_len: usize) -> Vec<Compress
 
     let match_intervals = extract_matches(a, b, min_match_len);
     if match_intervals.is_empty() {
-        return vec![Raw(&b[..])];
+        return vec![Raw(b)];
     }
 
     let mut results = Vec::with_capacity(match_intervals.len());
@@ -116,7 +116,7 @@ impl<'a> Iterator for RollingHash<'a> {
             return None;
         }
 
-        if let None = self.hash {
+        if self.hash.is_none() {
             let hash = Self::initial_hash(self.data, self.hash_len);
             self.hash = Some(hash);
             return Some((hash, 0));
