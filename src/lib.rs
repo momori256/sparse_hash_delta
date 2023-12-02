@@ -12,7 +12,7 @@ pub enum Compression<'a> {
 pub fn delta<'a>(a: &'a [u8], b: &'a [u8], min_match_len: usize) -> Vec<Compression<'a>> {
     use Compression::*;
 
-    let match_intervals = extract_matches(a, b, min_match_len);
+    let match_intervals = find_match_intervals(a, b, min_match_len);
     if match_intervals.is_empty() {
         return vec![Raw(b)];
     }
@@ -47,7 +47,7 @@ pub fn restore<'a>(a: &'a [u8], compressions: &[Compression<'a>]) -> Vec<&'a [u8
     results.into_iter().collect()
 }
 
-fn extract_matches(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
+fn find_match_intervals(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
     let hash_len = (min_match_len + 1) / 2;
     let hashes: HashMap<usize, usize> = RollingHash::new(a, hash_len).step_by(hash_len).collect();
 
@@ -218,7 +218,7 @@ mod tests {
     fn extract_match_2345() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [2, 3, 4, 5];
-        let result = extract_matches(&a, &b, 4);
+        let result = find_match_intervals(&a, &b, 4);
         assert_eq!(result, vec![make_match_interval(2, 0, 4)]);
     }
 
@@ -226,7 +226,7 @@ mod tests {
     fn extract_match_45() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [0, 4, 5, 0];
-        let result = extract_matches(&a, &b, 1);
+        let result = find_match_intervals(&a, &b, 1);
         assert_eq!(
             result,
             vec![
@@ -241,7 +241,7 @@ mod tests {
     fn extract_match_123_567() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [5, 6, 7, 9, 9, 1, 2, 3];
-        let result = extract_matches(&a, &b, 1);
+        let result = find_match_intervals(&a, &b, 1);
         assert_eq!(
             result,
             vec![
