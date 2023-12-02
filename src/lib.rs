@@ -13,7 +13,11 @@ pub fn delta<'a>(a: &'a [u8], b: &'a [u8], min_match_len: usize) -> Vec<Compress
     use Compression::*;
 
     let match_intervals = extract_matches(a, b, min_match_len);
-    let mut results = Vec::new();
+    if match_intervals.is_empty() {
+        return vec![Raw(&b[..])];
+    }
+
+    let mut results = Vec::with_capacity(match_intervals.len());
     let mut prev = 0;
     for MatchInterval { la, lb, len } in match_intervals {
         if prev < lb {
@@ -22,10 +26,13 @@ pub fn delta<'a>(a: &'a [u8], b: &'a [u8], min_match_len: usize) -> Vec<Compress
         results.push(Match(la, len));
         prev = lb + len;
     }
+    if prev != b.len() {
+        results.push(Raw(&b[prev..]));
+    }
     results
 }
 
-pub fn restore<'a>(a: &'a [u8], compressions: &[Compression<'a>]) -> Vec<&'a u8> {
+pub fn restore<'a>(a: &'a [u8], compressions: &[Compression<'a>]) -> Vec<&'a [u8]> {
     let mut results = Vec::new();
     for c in compressions {
         match c {
@@ -37,18 +44,24 @@ pub fn restore<'a>(a: &'a [u8], compressions: &[Compression<'a>]) -> Vec<&'a u8>
             }
         }
     }
-    results.into_iter().flatten().collect()
+    results.into_iter().collect()
 }
 
 fn extract_matches(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterval> {
     let hash_len = (min_match_len + 1) / 2;
     let hashes: HashMap<usize, usize> = RollingHash::new(a, hash_len).step_by(hash_len).collect();
+
     let matches = RollingHash::new(b, hash_len)
-        .filter_map(|(hb, ib)| {
+        .scan(0, |state, (hb, ib)| {
+            if ib < *state {
+                return Some(MatchInterval::empty());
+            }
             if let Some(&ia) = hashes.get(&hb) {
-                Some(MatchInterval::new(a, b, ia, ib))
+                let m = MatchInterval::new(a, b, ia, ib);
+                *state = m.br();
+                Some(m)
             } else {
-                None
+                Some(MatchInterval::empty())
             }
         })
         .scan(MatchInterval::empty(), |acc, mut m| {
@@ -59,34 +72,35 @@ fn extract_matches(a: &[u8], b: &[u8], min_match_len: usize) -> Vec<MatchInterva
             Some(m)
         })
         .filter(|m| m.len > 0);
+
     matches.collect()
 }
 
-struct RollingHash<'a> {
+pub struct RollingHash<'a> {
     data: &'a [u8],
     hash_len: usize,
     index: usize,
     hash: Option<usize>,
+    base_pow: usize,
 }
 
 impl<'a> RollingHash<'a> {
     pub fn new(data: &'a [u8], hash_len: usize) -> Self {
         let hash_len = std::cmp::min(data.len(), hash_len);
+        let base_pow = modpow(B, hash_len);
         Self {
             data,
             hash_len,
             index: 0,
             hash: None,
+            base_pow,
         }
     }
 
     fn initial_hash(data: &[u8], hash_len: usize) -> usize {
-        let mut hash = 0;
-        for i in 0..hash_len {
-            hash = hash + modpow(B, hash_len - 1 - i) * Self::to_usize(data[i]);
-            hash %= M;
-        }
-        hash
+        data.iter()
+            .take(hash_len)
+            .fold(0, |hash, &byte| (hash * B + Self::to_usize(byte)) % M)
     }
 
     fn to_usize(x: u8) -> usize {
@@ -110,7 +124,7 @@ impl<'a> Iterator for RollingHash<'a> {
 
         let v1 = B * self.hash.unwrap() % M;
         let v2 = Self::to_usize(self.data[self.index + self.hash_len]);
-        let v3 = modpow(B, self.hash_len) * Self::to_usize(self.data[self.index]) % M;
+        let v3 = self.base_pow * Self::to_usize(self.data[self.index]) % M;
         let hash = (v1 + v2 + M - v3) % M; // v1 + v2 - v3
 
         self.index += 1;
@@ -127,7 +141,8 @@ struct MatchInterval {
 }
 
 impl MatchInterval {
-    /// Search the match interval from a[ia] and b[ib].
+    // Search the matching interval from a[ia] and b[ib].
+    // a[la..la+len] == b[lb..lb+len].
     fn new(a: &[u8], b: &[u8], ia: usize, ib: usize) -> Self {
         let r = a[ia..]
             .iter()
@@ -142,22 +157,19 @@ impl MatchInterval {
             .take_while(|(va, vb)| va == vb)
             .count();
 
-        let al = ia - l;
-        let bl = ib - l;
+        let la = ia - l;
+        let lb = ib - l;
         let len = l + r;
-        Self {
-            la: al,
-            lb: bl,
-            len,
-        }
+        Self { la, lb, len }
     }
 
     fn empty() -> Self {
-        Self {
+        static EMPTY: MatchInterval = MatchInterval {
             la: 0,
             lb: 0,
             len: 0,
-        }
+        };
+        EMPTY
     }
 
     fn br(&self) -> usize {
@@ -174,23 +186,24 @@ impl MatchInterval {
         }
 
         let diff = other.br() - self.lb + 1;
-        self.len -= diff;
+        self.len = self.len.saturating_sub(diff);
         self.la += diff;
         self.lb += diff;
     }
 }
 
-fn modpow(a: usize, b: usize) -> usize {
-    if b == 0 {
-        return 1;
+fn modpow(base: usize, exponent: usize) -> usize {
+    let mut result = 1;
+    let mut base = base;
+    let mut exponent = exponent;
+    while exponent > 0 {
+        if exponent % 2 == 1 {
+            result = (result * base) % M;
+        }
+        base = (base * base) % M;
+        exponent /= 2;
     }
-
-    let a = a % M;
-    if b % 2 == 0 {
-        modpow(a * a, b / 2) % M
-    } else {
-        a * modpow(a, b - 1) % M
-    }
+    result
 }
 
 #[cfg(test)]
@@ -248,12 +261,30 @@ mod tests {
     }
 
     #[test]
+    fn delta_no_match() {
+        use Compression::*;
+        let a = [0, 1, 2, 3, 4, 5];
+        let b = [9, 9, 9, 9, 9, 9];
+        let result = delta(&a, &b, 3);
+        assert_eq!(result, vec![Raw(&b[..])]);
+    }
+
+    #[test]
+    fn delta_ends_with_raw() {
+        use Compression::*;
+        let a = [0, 1, 2, 3, 4, 5];
+        let b = [9, 9, 9, 3, 4, 5, 9];
+        let result = delta(&a, &b, 3);
+        assert_eq!(result, vec![Raw(&[9, 9, 9]), Match(3, 3), Raw(&[9])]);
+    }
+
+    #[test]
     fn restore_123_567() {
         let a = [0, 1, 2, 3, 4, 5, 6, 7];
         let b = [5, 6, 7, 9, 9, 1, 2, 3];
         let delta = delta(&a, &b, 3);
         let result = restore(&a, &delta);
-        assert_eq!(result, b.iter().collect::<Vec<_>>());
+        assert_eq!(result, vec![&b[0..3], &b[3..5], &b[5..]]);
     }
 
     #[test]
